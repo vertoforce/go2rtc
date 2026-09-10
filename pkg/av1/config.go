@@ -190,27 +190,47 @@ func ParseSequenceHeaderInfo(obu []byte) *SequenceHeaderInfo {
 	}
 
 	// color_description_present_flag
+	var colorPrimaries, transferChars, matrixCoeffs uint32 = 2, 2, 2 // unspecified
 	if br.readBits(1) == 1 {
-		br.readBits(8) // color_primaries
-		br.readBits(8) // transfer_characteristics
-		br.readBits(8) // matrix_coefficients
+		colorPrimaries = br.readBits(8)
+		transferChars = br.readBits(8)
+		matrixCoeffs = br.readBits(8)
 	}
 
-	if info.Monochrome {
-		br.readBits(1) // color_range
-		info.ChromaSubsamplingX = 0
-		info.ChromaSubsamplingY = 0
-	} else if info.BitDepth == 12 {
-		br.readBits(1) // color_range
-		info.ChromaSubsamplingX = byte(br.readBits(1))
-		info.ChromaSubsamplingY = byte(br.readBits(1))
-		if info.ChromaSubsamplingX == 1 && info.ChromaSubsamplingY == 1 {
-			info.ChromaSamplePos = byte(br.readBits(2))
-		}
-	} else {
+	// AV1 spec 5.5.2: the subsampling is implied by seq_profile and bit depth,
+	// and only coded for 12-bit profile 2
+	switch {
+	case info.Monochrome:
 		br.readBits(1) // color_range
 		info.ChromaSubsamplingX = 1
 		info.ChromaSubsamplingY = 1
+	case colorPrimaries == 1 && transferChars == 13 && matrixCoeffs == 0:
+		// sRGB with the identity matrix is 4:4:4 full range, no color_range bit
+		info.ChromaSubsamplingX = 0
+		info.ChromaSubsamplingY = 0
+	default:
+		br.readBits(1) // color_range
+		switch {
+		case info.Profile == 0:
+			info.ChromaSubsamplingX = 1
+			info.ChromaSubsamplingY = 1
+		case info.Profile == 1:
+			info.ChromaSubsamplingX = 0
+			info.ChromaSubsamplingY = 0
+		case info.BitDepth == 12:
+			info.ChromaSubsamplingX = byte(br.readBits(1))
+			if info.ChromaSubsamplingX == 1 {
+				info.ChromaSubsamplingY = byte(br.readBits(1))
+			} else {
+				info.ChromaSubsamplingY = 0
+			}
+		default:
+			info.ChromaSubsamplingX = 1
+			info.ChromaSubsamplingY = 0
+		}
+		if info.ChromaSubsamplingX == 1 && info.ChromaSubsamplingY == 1 {
+			info.ChromaSamplePos = byte(br.readBits(2))
+		}
 	}
 
 	// a header that ran off the end parsed into garbage, and callers rely on

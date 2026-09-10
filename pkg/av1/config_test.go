@@ -29,15 +29,17 @@ func (w *seqHdrWriter) obu() []byte {
 	return append(obu, w.buf...)
 }
 
-// buildSeqHdr writes a valid 1920x1080 8-bit 4:2:0 sequence header OBU.
+// buildSeqHdr writes a valid 1920x1080 8-bit sequence header OBU.
 // timing adds timing_info and decoder_model_info, delay adds
 // initial_display_delay_present_flag, both of which carry extra per
-// operating point fields ahead of the frame dimensions.
-func buildSeqHdr(timing, delay bool) []byte {
+// operating point fields ahead of the frame dimensions. profile and mono
+// pick the color_config layout: profile 0 is 4:2:0, profile 1 is 4:4:4 and
+// profile 2 at 8 bit is 4:2:2.
+func buildSeqHdr(profile uint32, mono, timing, delay bool) []byte {
 	w := &seqHdrWriter{}
-	w.write(0, 3) // seq_profile
-	w.write(0, 1) // still_picture
-	w.write(0, 1) // reduced_still_picture_header
+	w.write(profile, 3) // seq_profile
+	w.write(0, 1)       // still_picture
+	w.write(0, 1)       // reduced_still_picture_header
 
 	if timing {
 		w.write(1, 1)  // timing_info_present_flag
@@ -97,10 +99,18 @@ func buildSeqHdr(timing, delay bool) []byte {
 
 	// color_config
 	w.write(0, 1) // high_bitdepth
-	w.write(0, 1) // mono_chrome
+	if profile != 1 {
+		if mono {
+			w.write(1, 1) // mono_chrome
+		} else {
+			w.write(0, 1)
+		}
+	}
 	w.write(0, 1) // color_description_present_flag
 	w.write(0, 1) // color_range
-	w.write(0, 2) // chroma_sample_position
+	if !mono && profile == 0 {
+		w.write(0, 2) // chroma_sample_position, 4:2:0 only
+	}
 	w.write(0, 1) // separate_uv_delta_q
 	w.write(1, 1) // trailing one bit
 
@@ -120,7 +130,7 @@ func TestSequenceHeaderOperatingPoints(t *testing.T) {
 		{"decoder_model", true, false},
 		{"both", true, true},
 	} {
-		w, h := DecodeSequenceHeader(buildSeqHdr(tt.timing, tt.delay))
+		w, h := DecodeSequenceHeader(buildSeqHdr(0, false, tt.timing, tt.delay))
 		if w != 1920 || h != 1080 {
 			t.Errorf("%s: got %dx%d, want 1920x1080", tt.name, w, h)
 		}
@@ -131,7 +141,7 @@ func TestSequenceHeaderOperatingPoints(t *testing.T) {
 // The muxer only falls back to a default size when width is zero, so a
 // partial parse would write a 1x1 video track.
 func TestSequenceHeaderTruncated(t *testing.T) {
-	obu := buildSeqHdr(false, false)
+	obu := buildSeqHdr(0, false, false, false)
 
 	for i := 2; i < len(obu)-1; i++ {
 		trunc := obu[:i]
@@ -178,6 +188,39 @@ func TestSequenceHeaderRealStreams(t *testing.T) {
 		codec := ConfigToCodec(conf)
 		if codec.FmtpLine != string(seqHdr) {
 			t.Errorf("%s: ConfigToCodec kept %x, want %x", tt.name, codec.FmtpLine, seqHdr)
+		}
+	}
+}
+
+// TestSequenceHeaderChroma checks the chroma_subsampling_x and
+// chroma_subsampling_y written into the av1C record. They are implied by
+// seq_profile and bit depth rather than coded, except for 12-bit profile 2.
+func TestSequenceHeaderChroma(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		profile uint32
+		mono    bool
+		wantX   byte
+		wantY   byte
+	}{
+		{"profile0_420", 0, false, 1, 1},
+		{"profile1_444", 1, false, 0, 0},
+		{"profile2_422", 2, false, 1, 0},
+		{"monochrome", 0, true, 1, 1},
+	} {
+		info := ParseSequenceHeaderInfo(buildSeqHdr(tt.profile, tt.mono, false, false))
+		if info == nil {
+			t.Fatalf("%s: parse failed", tt.name)
+		}
+		if info.ChromaSubsamplingX != tt.wantX || info.ChromaSubsamplingY != tt.wantY {
+			t.Errorf("%s: got subsampling %d,%d, want %d,%d",
+				tt.name, info.ChromaSubsamplingX, info.ChromaSubsamplingY, tt.wantX, tt.wantY)
+		}
+		if info.Monochrome != tt.mono {
+			t.Errorf("%s: monochrome %v, want %v", tt.name, info.Monochrome, tt.mono)
+		}
+		if info.Width != 1920 || info.Height != 1080 {
+			t.Errorf("%s: got %dx%d, want 1920x1080", tt.name, info.Width, info.Height)
 		}
 	}
 }
