@@ -1,6 +1,10 @@
 package av1
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/AlexxIT/go2rtc/pkg/core"
+)
 
 // SequenceHeaderInfo holds parsed fields from an AV1 Sequence Header OBU.
 // Used for av1C box generation, MIME codec strings, and resolution detection.
@@ -288,6 +292,25 @@ func EncodeConfig(seqHdr []byte) []byte {
 	}
 
 	return conf
+}
+
+// ConfigToCodec parses an AV1CodecConfigurationRecord (av1C) into a core.Codec.
+// The record is carried in the Enhanced-RTMP/FLV PacketTypeSequenceStart body
+// and in the ISOBMFF av1C box. The sequence header OBU from configOBUs is kept
+// raw in FmtpLine, the same convention the MP4 consumer uses, so EncodeConfig
+// can write it back out unchanged.
+func ConfigToCodec(conf []byte) *core.Codec {
+	codec := &core.Codec{
+		Name:        core.CodecAV1,
+		ClockRate:   90000,
+		PayloadType: core.PayloadTypeRAW,
+	}
+	if len(conf) > 4 {
+		if seqHdr := SequenceHeader(conf[4:]); seqHdr != nil {
+			codec.FmtpLine = string(seqHdr)
+		}
+	}
+	return codec
 }
 
 // DecodeSequenceHeader parses a Sequence Header OBU and returns width and height.
