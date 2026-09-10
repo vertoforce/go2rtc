@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"strings"
 
+	"github.com/AlexxIT/go2rtc/pkg/bits"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
 
@@ -62,6 +63,119 @@ const (
 	OBURedundantFH    = 7
 	OBUTileList       = 8
 )
+
+// WidthHeight extracts max_frame_width/height from the Sequence Header OBU
+// embedded in an av1C AV1CodecConfigurationRecord (4-byte header followed by
+// configOBUs). Returns (0, 0) when no sequence header is present or parsing
+// fails. Needed because Safari sizes <video> from the mp4 sample-entry dims
+// and ignores the in-band sequence header (Chrome does the opposite).
+func WidthHeight(conf []byte) (width, height uint16) {
+	if len(conf) < 5 {
+		return 0, 0
+	}
+	obus := conf[4:] // skip av1C fixed header
+
+	for len(obus) > 0 {
+		b := obus[0]
+		obuType := (b >> 3) & 0x0F
+		i := 1
+		if b&0x04 != 0 { // obu_extension_flag
+			i++
+		}
+		size := len(obus) - i
+		if b&0x02 != 0 { // obu_has_size_field
+			v, n := leb128(obus[i:])
+			if n == 0 {
+				return 0, 0
+			}
+			i += n
+			size = int(v)
+		}
+		if size < 0 || i+size > len(obus) {
+			return 0, 0
+		}
+		if obuType == OBUSequenceHeader {
+			return parseSequenceHeader(obus[i : i+size])
+		}
+		obus = obus[i+size:]
+	}
+	return 0, 0
+}
+
+// parseSequenceHeader walks sequence_header_obu (AV1 spec 5.5.1) far enough
+// to reach max_frame_width_minus_1 / max_frame_height_minus_1.
+func parseSequenceHeader(b []byte) (uint16, uint16) {
+	r := bits.NewReader(b)
+
+	_ = r.ReadBits8(3) // seq_profile
+	_ = r.ReadBit()    // still_picture
+
+	if r.ReadBit() != 0 { // reduced_still_picture_header
+		_ = r.ReadBits8(5) // seq_level_idx[0]
+	} else {
+		decoderModelInfo := false
+		var bufferDelayLen byte
+
+		if r.ReadBit() != 0 { // timing_info_present_flag
+			_ = r.ReadBits(32)    // num_units_in_display_tick
+			_ = r.ReadBits(32)    // time_scale
+			if r.ReadBit() != 0 { // equal_picture_interval
+				_ = r.ReadUEGolomb() // num_ticks_per_picture_minus_1, uvlc()
+			}
+			decoderModelInfo = r.ReadBit() != 0 // decoder_model_info_present_flag
+			if decoderModelInfo {
+				bufferDelayLen = r.ReadBits8(5) + 1 // buffer_delay_length_minus_1
+				_ = r.ReadBits(32)                  // num_units_in_decoding_tick
+				_ = r.ReadBits8(5)                  // buffer_removal_time_length_minus_1
+				_ = r.ReadBits8(5)                  // frame_presentation_time_length_minus_1
+			}
+		}
+
+		initialDisplayDelay := r.ReadBit() != 0 // initial_display_delay_present_flag
+		opCnt := int(r.ReadBits8(5)) + 1        // operating_points_cnt_minus_1
+
+		for i := 0; i < opCnt; i++ {
+			_ = r.ReadBits16(12)        // operating_point_idc[i]
+			if r.ReadBits8(5) > 7 {     // seq_level_idx[i]
+				_ = r.ReadBit()         // seq_tier[i]
+			}
+			if decoderModelInfo {
+				if r.ReadBit() != 0 { // decoder_model_present_for_this_op[i]
+					_ = r.ReadBits64(bufferDelayLen) // decoder_buffer_delay
+					_ = r.ReadBits64(bufferDelayLen) // encoder_buffer_delay
+					_ = r.ReadBit()                  // low_delay_mode_flag
+				}
+			}
+			if initialDisplayDelay {
+				if r.ReadBit() != 0 { // initial_display_delay_present_for_this_op[i]
+					_ = r.ReadBits8(4) // initial_display_delay_minus_1[i]
+				}
+			}
+		}
+	}
+
+	widthBits := r.ReadBits8(4) + 1  // frame_width_bits_minus_1
+	heightBits := r.ReadBits8(4) + 1 // frame_height_bits_minus_1
+	w := r.ReadBits(widthBits) + 1   // max_frame_width_minus_1
+	h := r.ReadBits(heightBits) + 1  // max_frame_height_minus_1
+
+	if r.EOF || w > 0xFFFF || h > 0xFFFF {
+		return 0, 0
+	}
+	return uint16(w), uint16(h)
+}
+
+// leb128 decodes an unsigned LEB128 value (AV1 spec 4.10.5). Returns the
+// number of bytes consumed, or 0 on malformed input.
+func leb128(b []byte) (v uint64, n int) {
+	for i := 0; i < len(b) && i < 8; i++ {
+		v |= uint64(b[i]&0x7F) << (7 * i)
+		if b[i]&0x80 == 0 {
+			return v, i + 1
+		}
+	}
+	return 0, 0
+}
 
 // IsKeyframe scans a Low-Overhead-Bitstream-Format (LOB) AV1 frame and
 // returns true if a SEQUENCE_HEADER OBU appears at the front. Encoders

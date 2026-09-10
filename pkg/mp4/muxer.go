@@ -92,12 +92,18 @@ func (m *Muxer) GetInit() ([]byte, error) {
 				// inline sequence_header OBU at the first keyframe.
 				conf = []byte{0x81, 0x08, 0x0c, 0x00}
 			}
-			// Width/height aren't strictly required (the av1C contains
-			// the seq header which has them), but mp4 visual sample
-			// entries want sane values. Use 1920x1080 default — gets
-			// overridden by the bitstream sequence header.
+			// Real dims must come from the sequence header OBU inside the
+			// av1C: Safari sizes the video element by the tkhd/sample-entry
+			// dims and ignores the in-band sequence header, so a wrong value
+			// here renders larger streams as a top-left crop. (Chrome uses
+			// the bitstream seq header and doesn't care.)
+			width, height := av1.WidthHeight(conf)
+			if width == 0 || height == 0 {
+				width, height = 1920, 1080
+			}
+
 			mv.WriteVideoTrack(
-				uint32(i+1), codec.Name, codec.ClockRate, 1920, 1080, conf,
+				uint32(i+1), codec.Name, codec.ClockRate, width, height, conf,
 			)
 
 		case core.CodecAAC:
