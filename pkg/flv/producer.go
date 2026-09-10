@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
+	"github.com/AlexxIT/go2rtc/pkg/av1"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
@@ -101,8 +102,16 @@ func (c *Producer) Start() error {
 			if isExHeader(pkt.Payload) {
 				switch packetType := pkt.Payload[0] & 0b1111; packetType {
 				case PacketTypeCodedFrames:
-					// frame type 4b, packet type 4b, fourCC 32b, composition time 24b
-					pkt.Payload = pkt.Payload[8:]
+					// frame type 4b, packet type 4b, fourCC 32b, composition time 24b.
+					// AV1 has no B-frames so ffmpeg/Enhanced-FLV omits the
+					// 3-byte composition_time_offset for fourCC=av01 — only
+					// HEVC carries it. Stripping 8 bytes for AV1 would eat
+					// the first OBU header byte and corrupt the bitstream.
+					if string(pkt.Payload[1:5]) == "av01" {
+						pkt.Payload = pkt.Payload[5:]
+					} else {
+						pkt.Payload = pkt.Payload[8:]
+					}
 				case PacketTypeCodedFramesX:
 					// frame type 4b, packet type 4b, fourCC 32b
 					pkt.Payload = pkt.Payload[5:]
@@ -197,15 +206,18 @@ func (c *Producer) probe() error {
 			var codec *core.Codec
 
 			if isExHeader(pkt.Payload) {
-				if string(pkt.Payload[1:5]) != "hvc1" {
-					continue
-				}
-
 				if packetType := pkt.Payload[0] & 0b1111; packetType != PacketTypeSequenceStart {
 					continue
 				}
 
-				codec = h265.ConfigToCodec(pkt.Payload[5:])
+				switch string(pkt.Payload[1:5]) {
+				case "hvc1":
+					codec = h265.ConfigToCodec(pkt.Payload[5:])
+				case "av01":
+					codec = av1.ConfigToCodec(pkt.Payload[5:])
+				default:
+					continue
+				}
 			} else {
 				_ = pkt.Payload[0] >> 4 // FrameType
 

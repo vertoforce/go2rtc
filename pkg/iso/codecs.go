@@ -12,6 +12,9 @@ func (m *Movie) WriteVideo(codec string, width, height uint16, conf []byte) {
 		m.StartAtom("avc1")
 	case core.CodecH265:
 		m.StartAtom("hev1")
+	case core.CodecAV1:
+		// AV1-ISOBMFF §2.1: sample entry FourCC is "av01".
+		m.StartAtom("av01")
 	default:
 		panic("unsupported iso video: " + codec)
 	}
@@ -37,16 +40,20 @@ func (m *Movie) WriteVideo(codec string, width, height uint16, conf []byte) {
 		m.StartAtom("avcC")
 	case core.CodecH265:
 		m.StartAtom("hvcC")
+	case core.CodecAV1:
+		// AV1-ISOBMFF §2.3: codec configuration box "av1C" carrying the
+		// AV1CodecConfigurationRecord (4-byte header + sequence header OBU).
+		m.StartAtom("av1C")
 	}
 	m.Write(conf)
-	m.EndAtom() // AVCC
+	m.EndAtom() // AVCC / HVCC / AV1C
 
 	m.StartAtom("pasp") // Pixel Aspect Ratio
 	m.WriteUint32(1)    // hSpacing
 	m.WriteUint32(1)    // vSpacing
 	m.EndAtom()
 
-	m.EndAtom() // AVC1
+	m.EndAtom() // AVC1 / HEV1 / AV01
 }
 
 func (m *Movie) WriteAudio(codec string, channels uint16, sampleRate uint32, conf []byte) {

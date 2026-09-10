@@ -67,6 +67,9 @@ func ParseCodecs(codecs string, parseAudio bool) (medias []*core.Media) {
 		case MimeH265:
 			codec := &core.Codec{Name: core.CodecH265}
 			videos = append(videos, codec)
+		case MimeAV1:
+			codec := &core.Codec{Name: core.CodecAV1}
+			videos = append(videos, codec)
 		case MimeAAC:
 			codec := &core.Codec{Name: core.CodecAAC}
 			audios = append(audios, codec)

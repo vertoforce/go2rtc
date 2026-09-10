@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
+	"github.com/AlexxIT/go2rtc/pkg/av1"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
@@ -35,6 +36,7 @@ func NewConsumer(medias []*core.Media) *Consumer {
 				Codecs: []*core.Codec{
 					{Name: core.CodecH264},
 					{Name: core.CodecH265},
+					{Name: core.CodecAV1},
 				},
 			},
 			{
@@ -113,6 +115,26 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			handler.Handler = h265.RTPDepay(track.Codec, handler.Handler)
 		} else {
 			handler.Handler = h265.RepairAVCC(track.Codec, handler.Handler)
+		}
+
+	case core.CodecAV1:
+		// FLV producer delivers raw AV1 LOB frames as the rtp.Packet
+		// payload. No depacketizer needed — the muxer just embeds the
+		// payload as an mdat sample.
+		handler.Handler = func(packet *rtp.Packet) {
+			if !c.start {
+				if !av1.IsKeyframe(packet.Payload) {
+					return
+				}
+				c.start = true
+			}
+
+			c.mu.Lock()
+			b := c.muxer.GetPayload(trackID, packet)
+			if n, err := c.wr.Write(b); err == nil {
+				c.Send += n
+			}
+			c.mu.Unlock()
 		}
 
 	default:

@@ -3,6 +3,7 @@ package mp4
 import (
 	"encoding/hex"
 
+	"github.com/AlexxIT/go2rtc/pkg/av1"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
@@ -81,6 +82,24 @@ func (m *Muxer) GetInit() ([]byte, error) {
 				uint32(i+1), codec.Name, codec.ClockRate, width, height, h265.EncodeConfig(vps, sps, pps),
 			)
 
+		case core.CodecAV1:
+			conf := av1.GetConfig(codec.FmtpLine)
+			if conf == nil {
+				// Fallback: minimum valid av1C — marker+version=0x81,
+				// profile=0/level=8 (4.0), tier=0, 8-bit, YUV 4:2:0, no
+				// presentation delay, no embedded sequence header. Most
+				// players accept this and read codec params from the
+				// inline sequence_header OBU at the first keyframe.
+				conf = []byte{0x81, 0x08, 0x0c, 0x00}
+			}
+			// Width/height aren't strictly required (the av1C contains
+			// the seq header which has them), but mp4 visual sample
+			// entries want sane values. Use 1920x1080 default — gets
+			// overridden by the bitstream sequence header.
+			mv.WriteVideoTrack(
+				uint32(i+1), codec.Name, codec.ClockRate, 1920, 1080, conf,
+			)
+
 		case core.CodecAAC:
 			s := core.Between(codec.FmtpLine, "config=", ";")
 			b, err := hex.DecodeString(s)
@@ -138,6 +157,12 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		}
 	case core.CodecH265:
 		if h265.IsKeyframe(packet.Payload) {
+			flags = iso.SampleVideoIFrame
+		} else {
+			flags = iso.SampleVideoNonIFrame
+		}
+	case core.CodecAV1:
+		if av1.IsKeyframe(packet.Payload) {
 			flags = iso.SampleVideoIFrame
 		} else {
 			flags = iso.SampleVideoNonIFrame
