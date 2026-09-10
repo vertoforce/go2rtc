@@ -68,25 +68,32 @@ func ParseSequenceHeaderInfo(obu []byte) *SequenceHeaderInfo {
 		// reduced_still has no frame dimensions in the normal path;
 		// leave width/height = 0 (caller should use defaults)
 		info.BitDepth = 8
+		if br.eof {
+			return nil
+		}
 		return info
 	}
 
 	// timing_info_present_flag
+	var decoderModelInfo bool
+	var bufferDelayLength uint32
+
 	if br.readBits(1) == 1 {
-		br.readBits(32) // num_units_in_display_tick
-		br.readBits(32) // time_scale
+		br.readBits(32)          // num_units_in_display_tick
+		br.readBits(32)          // time_scale
 		if br.readBits(1) == 1 { // equal_picture_interval
 			br.readUVLC() // num_ticks_per_picture_minus_1
 		}
 		if br.readBits(1) == 1 { // decoder_model_info_present_flag
-			br.readBits(5)  // buffer_delay_length_minus_1
-			br.readBits(32) // num_units_in_decoding_tick
-			br.readBits(5)  // buffer_removal_time_length_minus_1
-			br.readBits(5)  // frame_presentation_time_length_minus_1
+			decoderModelInfo = true
+			bufferDelayLength = br.readBits(5) + 1 // buffer_delay_length_minus_1
+			br.readBits(32)                        // num_units_in_decoding_tick
+			br.readBits(5)                         // buffer_removal_time_length_minus_1
+			br.readBits(5)                         // frame_presentation_time_length_minus_1
 		}
 	}
 
-	br.readBits(1) // initial_display_delay_present_flag
+	initialDisplayDelay := br.readBits(1) == 1 // initial_display_delay_present_flag
 
 	// operating points
 	opPoints := br.readBits(5) + 1
@@ -101,6 +108,14 @@ func ParseSequenceHeaderInfo(obu []byte) *SequenceHeaderInfo {
 			if i == 0 {
 				info.Tier = byte(t)
 			}
+		}
+		if decoderModelInfo && br.readBits(1) == 1 { // decoder_model_present_for_this_op
+			br.readBits(bufferDelayLength) // decoder_buffer_delay
+			br.readBits(bufferDelayLength) // encoder_buffer_delay
+			br.readBits(1)                 // low_delay_mode_flag
+		}
+		if initialDisplayDelay && br.readBits(1) == 1 { // initial_display_delay_present_for_this_op
+			br.readBits(4) // initial_display_delay_minus_1
 		}
 	}
 
@@ -196,6 +211,12 @@ func ParseSequenceHeaderInfo(obu []byte) *SequenceHeaderInfo {
 		br.readBits(1) // color_range
 		info.ChromaSubsamplingX = 1
 		info.ChromaSubsamplingY = 1
+	}
+
+	// a header that ran off the end parsed into garbage, and callers rely on
+	// nil to fall back instead of writing a 1x1 track
+	if br.eof {
+		return nil
 	}
 
 	return info
@@ -325,7 +346,8 @@ func DecodeSequenceHeader(obu []byte) (width, height uint16) {
 // bitReader is a simple bit-level reader.
 type bitReader struct {
 	data   []byte
-	offset int // bit offset
+	offset int  // bit offset
+	eof    bool // set when a read ran past the end of data
 }
 
 func (r *bitReader) readBits(n uint32) uint32 {
@@ -334,6 +356,7 @@ func (r *bitReader) readBits(n uint32) uint32 {
 		byteIdx := r.offset / 8
 		bitIdx := 7 - (r.offset % 8)
 		if byteIdx >= len(r.data) {
+			r.eof = true
 			return val
 		}
 		val = (val << 1) | uint32((r.data[byteIdx]>>uint(bitIdx))&1)
