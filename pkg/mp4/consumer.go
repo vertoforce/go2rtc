@@ -26,6 +26,11 @@ type Consumer struct {
 	startOnce sync.Once
 	startCh   chan struct{}
 
+	// closeOnce + closeCh: closed by Stop, so a consumer that never gets a
+	// keyframe doesn't leave WriteTo blocked forever.
+	closeOnce sync.Once
+	closeCh   chan struct{}
+
 	// OnInit is called from WriteTo after the init segment is generated,
 	// just before writing data. Use this to send the correct content-type
 	// to consumers (e.g. MSE) with actual codec parameters.
@@ -70,6 +75,7 @@ func NewConsumer(medias []*core.Media) *Consumer {
 		muxer:   &Muxer{},
 		wr:      wr,
 		startCh: make(chan struct{}),
+		closeCh: make(chan struct{}),
 	}
 }
 
@@ -207,6 +213,11 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	return nil
 }
 
+func (c *Consumer) Stop() error {
+	c.closeOnce.Do(func() { close(c.closeCh) })
+	return c.Connection.Stop()
+}
+
 func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
 	if len(c.Senders) == 1 && c.Senders[0].Codec.IsAudio() {
 		c.start = true
@@ -215,7 +226,11 @@ func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
 
 	// Wait for the first video keyframe so codec parameters (e.g. AV1
 	// sequence header) are available before generating the init segment.
-	<-c.startCh
+	select {
+	case <-c.startCh:
+	case <-c.closeCh:
+		return 0, nil
+	}
 
 	init, err := c.muxer.GetInit()
 	if err != nil {
