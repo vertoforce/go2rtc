@@ -36,6 +36,29 @@ Ultimate camera streaming application with support for dozens formats and protoc
 - [streaming stats](#streaming-stats) for all active connections
 - can be [integrated to any project](#projects-using-go2rtc) or be used as [standalone app](#go2rtc-binary)
 
+## About this fork
+
+This is AlexxIT/go2rtc master plus the fixes we run in production and are offering upstream.
+
+| Fix | Branch | Upstream thread | Measured |
+|---|---|---|---|
+| Dial and redial with the producer mutex released | `fix/streams-dial-without-producer-mutex` | none yet | Master: two clients of an `exec:sleep 3600` source get no response at 200 s. Here: both get HTTP 500 at 90 s and the process keeps serving |
+| Apply `starttimeout` to the exec pipe probe | `fix/exec-pipe-start-timeout` | [#1846](https://github.com/AlexxIT/go2rtc/issues/1846) added the option for RTSP only | Master with `#starttimeout=5`: no response at 60 s. Here: HTTP 500 at 5.01 s |
+| Kill the process group and escalate to SIGKILL after a grace | `fix/shell-kill-process-group` | [#1243](https://github.com/AlexxIT/go2rtc/issues/1243) | Master, 10 s after `Close()` with a trapped SIGTERM: child and grandchild both alive. Here: both gone |
+| Retry `AddPreload` when the first `AddConsumer` fails | `fix/preload-retry` | [#2359](https://github.com/AlexxIT/go2rtc/issues/2359) covers a different sub-case | Not measured |
+| AV1 in MP4, FLV, MSE and WebRTC | `feat/av1-flv-on-pr2106` | [#2106](https://github.com/AlexxIT/go2rtc/pull/2106) | A generated 1920x1080 sequence header parses as 175x64 on the PR head, correctly here. `pkg/mp4` no longer blocks `WriteTo` forever when no keyframe arrives |
+
+AV1 support is upstream PR [#2106](https://github.com/AlexxIT/go2rtc/pull/2106) by RaHehl, rebased onto master, with our FLV producer support and three fixes on top.
+
+`master` mirrors upstream and gets no local commits. `stable` is the build we run.
+
+Build:
+
+```
+docker run --rm -v $(pwd):/src -w /src -e GOOS=linux -e GOARCH=amd64 -e CGO_ENABLED=0 \
+  golang:1.24 go build -trimpath -ldflags="-s -w" -o /src/go2rtc_linux_amd64 .
+```
+
 #### Inspired by
 
 - series of streaming projects from [@deepch](https://github.com/deepch)
